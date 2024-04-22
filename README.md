@@ -22,6 +22,15 @@ NOTE: Requires root in order to access and modify the memory of the process. Con
 # ./equip-patcher
 ```
 This will start the process. It will continually search for TF2 to open, and once open, search for the memory pattern. Note that the module which contains the pattern is not opened immediately, and will be present after the intro video cutscene.
+
+## Automatic running
+This program should be callable from within the `tf.sh` file present within the Team Fortress 2 directory. Somewhere near the top, call
+```
+/path/to/equip-patcher &
+```
+to have the patcher run whenever the game is opened. 
+
+**NOTE:** You will have to run this with root permissions. This can be accomplished with sudo or doas by whitelisting the program to be runnable without password. You can search this up online to figure out how it's done.
 # Requirements
 - GCC
 # How it works
