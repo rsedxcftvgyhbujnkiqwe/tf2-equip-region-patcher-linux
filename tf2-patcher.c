@@ -16,7 +16,7 @@
 
 #define PATTERN_SIZE 5
 #define REPLACE_SIZE 5
-const unsigned char pattern[PATTERN_SIZE] = {0xE8, 0x9C, 0x2D, 0x7C, 0x00};
+const unsigned char pattern[PATTERN_SIZE] = {0xE8, 0x1C, 0x29, 0x7C, 0x00};
 unsigned char replacement[REPLACE_SIZE] = {0xE9, 0xF3, 0x01, 0x00, 0x00};
 
 int compare_with_wildcard(const unsigned char *memory, const unsigned char *pattern, int size);
