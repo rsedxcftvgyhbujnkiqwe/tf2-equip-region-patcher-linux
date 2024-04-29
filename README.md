@@ -23,6 +23,7 @@ NOTE: Requires root in order to access and modify the memory of the process. Con
 ```
 This will start the process. It will continually search for TF2 to open, and once open, search for the memory pattern. Note that the module which contains the pattern is not opened immediately, and will be present after the intro video cutscene.
 
+This must be run **before** starting your game. While the game is loading, before reaching the main menu, your inventory's equip regions are being calculated. So the patch must be put in before that happens, since equip regions are only generated once on startup. If you do not have the patch running and you open the game, any conflicting items will be unequipped. If you use the patcher on startup every time, items will stay equipped.
 ## Automatic running
 This script can be run via the launch options for TF2.
 
