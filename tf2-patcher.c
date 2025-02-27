@@ -11,30 +11,125 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define RETRY_INTERVAL 1000
-#define MAX_RETRY_TIME 300
+#define RETRY_INTERVAL 1000    // in milliseconds
+#define MAX_RETRY_TIME 300     // in seconds
 
-#define PATTERN_SIZE 5
-#define REPLACE_SIZE 5
-const unsigned char pattern[PATTERN_SIZE] = {0xE8, 0xDC, 0x44, 0x7C, 0x00};
-unsigned char replacement[REPLACE_SIZE] = {0xE9, 0xF3, 0x01, 0x00, 0x00};
+// Updated patch_t with separate sizes for pattern and replacement.
+typedef struct {
+    const unsigned char *pattern;      // The pattern to find
+    size_t pattern_size;               // Size of the pattern
+    const unsigned char *replacement;  // The replacement bytes
+    size_t replacement_size;           // Size of the replacement bytes
+} patch_t;
+
+// Example patterns and replacements:
+static const unsigned char pattern1[] = {
+    0x66, 0x0F, 0xD6, 0x83, 0x0C, 0x02, 0x00, 0x00
+};
+static const unsigned char replacement1[] = {
+    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+};
+
+//attempted all class patch
+// static const unsigned char pattern2[] = {
+//     0xE8, 0x06, 0x70, 0xEC, 0xFF
+// };
+
+// static const unsigned char replacement2[] = {
+//     0xB9, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x84, 0x24, 0x74,
+//     0x03, 0x00, 0x00, 0xBA, 0x01, 0x00, 0x00, 0x00, 0xD3, 0xE2,
+//     0x09, 0x14, 0x8F, 0x41, 0x8B, 0x84, 0x24, 0xA0, 0x02, 0x00,
+//     0x00, 0x89, 0x04, 0x8E, 0x41, 0x83, 0xF9, 0x0B, 0x7C, 0xE5,
+//     0xE9, 0xBE, 0x04, 0x00, 0x00
+// };
+
+// List all patches with their individual sizes:
+static patch_t g_patches[] = {
+    { pattern1, sizeof(pattern1), replacement1, sizeof(replacement1) },
+    //{ pattern2, sizeof(pattern2), replacement2, sizeof(replacement2) }
+};
+
+static const int NUM_PATCHES = sizeof(g_patches) / sizeof(g_patches[0]);
 
 int compare_with_wildcard(const unsigned char *memory, const unsigned char *pattern, int size);
 long attach_process(pid_t pid);
 void detach_process(pid_t pid);
 pid_t find_pid_by_name(const char *process_name);
-unsigned long find_and_replace_pattern(int fd, unsigned long start, unsigned long end);
 
-int main() {
+/**
+ * Scans memory from [start, end) in one read, and attempts to find/replace
+ * each pattern in g_patches exactly once.
+ *
+ * Return value:
+ *   - Nonzero if at least one patch was applied in this region.
+ *   - 0 if no patches were applied in this region.
+ */
+int find_and_replace_patterns(int fd, unsigned long start, unsigned long end) {
+    size_t region_size = end - start;
+    if (region_size == 0) {
+        return 0;
+    }
+
+    unsigned char *buffer = (unsigned char *)malloc(region_size);
+    if (!buffer) {
+        fprintf(stderr, "Failed to allocate memory for region scan\n");
+        return 0;
+    }
+
+    // Read the memory region.
+    if (lseek(fd, start, SEEK_SET) < 0) {
+        perror("lseek");
+        free(buffer);
+        return 0;
+    }
+    if (read(fd, buffer, region_size) != (ssize_t)region_size) {
+        perror("Error reading memory");
+        free(buffer);
+        return 0;
+    }
+
+    int patched_any = 0;
+
+    // For each patch, scan through the region to find & replace the pattern.
+    for (int p = 0; p < NUM_PATCHES; p++) {
+        const unsigned char *pattern      = g_patches[p].pattern;
+        size_t pattern_size               = g_patches[p].pattern_size;
+        const unsigned char *replacement  = g_patches[p].replacement;
+        size_t replacement_size           = g_patches[p].replacement_size;
+
+        for (unsigned long i = 0; i + pattern_size <= region_size; i++) {
+            if (compare_with_wildcard(buffer + i, pattern, (int)pattern_size)) {
+                // Compute the address in the process memory.
+                unsigned long address = start + i;
+
+                // Write the full replacement bytes to memory.
+                if (pwrite(fd, replacement, replacement_size, address) != (ssize_t)replacement_size) {
+                    perror("Error writing replacement bytes to memory");
+                } else {
+                    patched_any = 1;
+                    printf("Found pattern (size=%zu) at 0x%lX; replaced with %zu bytes.\n",
+                           pattern_size, address, replacement_size);
+                }
+                // If you want to replace only the first occurrence of each pattern, break here.
+                break;
+            }
+        }
+    }
+
+    free(buffer);
+    return patched_any;
+}
+
+int main(void) {
     printf("========== Equip Patcher ==========\n");
     printf("Waiting for game to start....\n");
 
     const char *process_name = "tf_linux64";
     pid_t pid = -1;
     time_t start_time = time(NULL);
-    int pattern_found = 0;
 
-    while (pid == -1 && difftime(time(NULL), start_time) < MAX_RETRY_TIME) {
+    // Wait up to MAX_RETRY_TIME seconds for the process to appear.
+    while ((pid == -1) && (difftime(time(NULL), start_time) < MAX_RETRY_TIME)) {
         pid = find_pid_by_name(process_name);
         if (pid == -1) {
             usleep(RETRY_INTERVAL * 1000);
@@ -42,46 +137,51 @@ int main() {
     }
 
     if (pid == -1) {
-        fprintf(stderr, "Could not find process '%s' within %d seconds.\n", process_name, MAX_RETRY_TIME);
+        fprintf(stderr, "Could not find process '%s' within %d seconds.\n",
+                process_name, MAX_RETRY_TIME);
         return 1;
     }
 
-    printf("Found game at PID %d\n",pid);
+    printf("Found game at PID %d\n", pid);
+    printf("Waiting for pattern module load (client.so)...\n");
 
-    printf("Waiting for pattern module load...\n");
+    int pattern_found = 0;
+    start_time = time(NULL); // reset start time to measure patch wait
 
-    while (difftime(time(NULL), start_time) < MAX_RETRY_TIME && !pattern_found) {
+    // Wait up to MAX_RETRY_TIME seconds for client.so to be mapped and patches to be found.
+    while ((difftime(time(NULL), start_time) < MAX_RETRY_TIME) && !pattern_found) {
         if (attach_process(pid) != 0) {
             usleep(RETRY_INTERVAL * 1000);
             continue;
         }
 
         char maps_filename[256], mem_filename[256];
-        sprintf(maps_filename, "/proc/%d/maps", pid);
-        sprintf(mem_filename, "/proc/%d/mem", pid);
+        snprintf(maps_filename, sizeof(maps_filename), "/proc/%d/maps", pid);
+        snprintf(mem_filename, sizeof(mem_filename), "/proc/%d/mem",  pid);
+
         FILE *maps_file = fopen(maps_filename, "r");
-        int mem_fd = open(mem_filename, O_RDWR);
-        if (maps_file == NULL || mem_fd == -1) {
-            perror("Error opening files");
+        int mem_fd       = open(mem_filename, O_RDWR);
+
+        if (!maps_file || mem_fd == -1) {
+            perror("Error opening maps or mem file");
+            if (maps_file) fclose(maps_file);
+            if (mem_fd != -1) close(mem_fd);
             detach_process(pid);
             usleep(RETRY_INTERVAL * 1000);
             continue;
         }
 
+        // Scan /proc/PID/maps for "client.so" regions and patch them.
         char line[256];
-        unsigned long start, end;
-
-        fseek(maps_file, 0, SEEK_SET);
-        while (fgets(line, sizeof(line), maps_file) != NULL) {
+        while (fgets(line, sizeof(line), maps_file)) {
             if (strstr(line, "client.so")) {
-                sscanf(line, "%lx-%lx", &start, &end);
-                
-                unsigned long address = find_and_replace_pattern(mem_fd, start, end);
-                if (address) {
-                    pattern_found = 1;
-                    printf("Found pattern\n");
-                    printf("Replaced pattern\n");
-                    break;
+                unsigned long start_addr = 0, end_addr = 0;
+                if (sscanf(line, "%lx-%lx", &start_addr, &end_addr) == 2) {
+                    int patched = find_and_replace_patterns(mem_fd, start_addr, end_addr);
+                    if (patched) {
+                        pattern_found = 1;
+                        break;
+                    }
                 }
             }
         }
@@ -99,6 +199,7 @@ int main() {
 }
 
 int compare_with_wildcard(const unsigned char *memory, const unsigned char *pattern, int size) {
+    // Allows 0xFF to act as a wildcard, matching any byte.
     for (int i = 0; i < size; ++i) {
         if (pattern[i] != 0xFF && memory[i] != pattern[i]) {
             return 0;
@@ -124,43 +225,16 @@ void detach_process(pid_t pid) {
 
 pid_t find_pid_by_name(const char *process_name) {
     char cmd[512];
-    sprintf(cmd, "pgrep %s", process_name);
+    snprintf(cmd, sizeof(cmd), "pgrep %s", process_name);
     FILE *fp = popen(cmd, "r");
-    if (fp == NULL) {
+    if (!fp) {
         perror("popen");
         return -1;
     }
     pid_t pid = -1;
-    fscanf(fp, "%d", &pid);
+    if (fscanf(fp, "%d", &pid) != 1) {
+        pid = -1; // no PID found
+    }
     pclose(fp);
     return pid;
-}
-
-unsigned long find_and_replace_pattern(int fd, unsigned long start, unsigned long end) {
-    unsigned char *buffer = malloc(end - start);
-    if (buffer == NULL) {
-        fprintf(stderr, "Failed to allocate memory\n");
-        return 0;
-    }
-
-    lseek(fd, start, SEEK_SET);
-    if (read(fd, buffer, end - start) != end - start) {
-        perror("Error reading memory");
-        free(buffer);
-        return 0;
-    }
-
-    unsigned long address = 0;
-    for (unsigned long i = 0; i < end - start - PATTERN_SIZE; ++i) {
-        if (compare_with_wildcard(buffer + i, pattern, PATTERN_SIZE)) {
-            address = start + i;
-            if (pwrite(fd, replacement, REPLACE_SIZE, address) != REPLACE_SIZE) {
-                perror("Error writing memory");
-            }
-            break;
-        }
-    }
-
-    free(buffer);
-    return address;
 }
